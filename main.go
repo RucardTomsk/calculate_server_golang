@@ -11,11 +11,13 @@ import (
 	calculate "calculator/calculate_module"
 	pb "calculator/protos"
 
+	next_iteration "calculator/next_iteration_module"
+
 	"google.golang.org/grpc"
 )
 
 var (
-	port = flag.Int("port", 50051, "The server port")
+	port = flag.Int("port", 50052, "The server port")
 )
 
 type server struct {
@@ -27,6 +29,7 @@ func (s *server) Calculate(ctx context.Context, in *pb.Request) (*pb.Response, e
 		Data_dict     map[string][]bool
 		Data_add_dict map[string][]map[string][]map[string]bool
 		Weight        map[string]int64
+		Method_id     int64
 	}
 
 	var st data_dict_json
@@ -36,7 +39,11 @@ func (s *server) Calculate(ctx context.Context, in *pb.Request) (*pb.Response, e
 		log.Fatal(err)
 	}
 
-	res, plh, plhp := calculate.StartCalculate(int(in.GetIter()), 1, in.GetThreshold(), st.Data_dict, st.Data_add_dict, st.Weight)
+	res, plh, plhp := calculate.StartCalculate(int(in.GetIter()), 1, in.GetThreshold(), st.Data_dict, st.Data_add_dict, st.Weight, st.Method_id)
+	_map := make(map[string]float64)
+	json.Unmarshal([]byte(res), &_map)
+	name, value := next_iteration.NextIteration(int(in.GetIter()), 1, in.GetThreshold(), st.Data_dict, st.Data_add_dict, st.Weight, st.Method_id, _map)
+	fmt.Println(name, value)
 	return &pb.Response{Res: res, Plh: plh, Plhp: plhp}, nil
 }
 

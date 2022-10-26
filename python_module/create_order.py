@@ -63,10 +63,10 @@ class create_order(object):
         while len(order_arr) != 0:
             mas1 = []
             mas2 = []
-            for node_id in order_arr:
-                mas1.append(node_id)
-                order_arr.remove(node_id)
-                mas = [order.index(node_guid) for node_guid in self.API.return_addiction(order[node_id])]
+            while len(order_arr) != 0:
+                mas1.append(order_arr[0])
+                mas = [order.index(node_guid) for node_guid in self.API.return_addiction(order[order_arr[0]])]
+                order_arr.remove(order_arr[0])
                 for node in mas:
                     if node in mas2:
                         pass
@@ -89,12 +89,12 @@ class create_order(object):
                 #print(order_arr)
 
             mas2.sort()
-            #print(mas2)
-            #mas2 = list(set(mas2))
             order_arr = array('i',mas2)
+
             end_mas.append([order[node_id] for node_id in mas1])
-            print(mas1)
-            print(mas2)
+
+            print([self.API.get_node_name(order[node_id]) for node_id in mas1])
+            print([self.API.get_node_name(order[node_id]) for node_id in mas2])
 
         return end_mas
 
@@ -103,4 +103,7 @@ if __name__ == "__main__":
     end_mas = get_order.main()
 
     with open("calculate_order.json",'w') as f:
+        #newMas = []
+        #for m in end_mas:
+            #newMas += m
         f.write(json.dumps({'mas':end_mas}, indent = 4))

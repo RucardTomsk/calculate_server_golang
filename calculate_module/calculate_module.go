@@ -7,32 +7,23 @@ import (
 	"io/ioutil"
 	"log"
 	"math"
+	"math/big"
 	"strconv"
-	"strings"
+	"sync"
 	"time"
 
 	"github.com/neo4j/neo4j-go-driver/v4/neo4j"
 )
 
-/*
+var (
+	Labels        = newLabelsRegister()
 	Iteration     int
 	ProjectScale  int
 	Threshold     float64
 	Data_dict     map[string][]bool
 	Data_add_dict map[string][]map[string][]map[string]bool
 	Weight        map[string]int64
-	Guid          string
-*/
-
-var (
-	Labels               = newLabelsRegister()
-	Iteration            int
-	ProjectScale         int
-	Threshold            float64
-	Data_dict            map[string][]bool
-	Data_add_dict        map[string][]map[string][]map[string]bool
-	Weight               map[string]int64
-	Mas_calculate_nodes  []string
+	//Mas_calculate_nodes  []string
 	Dict_node_name       map[string]string
 	Mas_dictionary_nodes []map[string]float64
 	Turn                 []string
@@ -95,8 +86,8 @@ func StartCalculate(
 	data_dict map[string][]bool,
 	data_add_dict map[string][]map[string][]map[string]bool,
 	weight map[string]int64,
-) (string, string, string) {
-	fmt.Println("START")
+	method_id int64) (string, string, string) {
+	//fmt.Println("START")
 
 	Iteration = iteration
 	ProjectScale = project_scale
@@ -105,28 +96,550 @@ func StartCalculate(
 	Data_add_dict = data_add_dict
 	Weight = weight
 
-	dbUri := "neo4j://localhost:7687"
-	Ndriver, err := neo4j.NewDriver(dbUri, neo4j.BasicAuth("Golang", "contrelspawn123", ""))
-	if err != nil {
-		log.Fatal(err)
-	}
-	defer Ndriver.Close()
-	session := Ndriver.NewSession(neo4j.SessionConfig{
-		AccessMode:   neo4j.AccessModeRead,
-		DatabaseName: "prectice",
-	})
-	defer session.Close()
+	session := api_neo4j.GetSession("neo4j://localhost:7687", method_id)
 
-	//fmt.Println(Iteration)
-	//fmt.Println(ProjectScale)
-	//fmt.Println(Data_dict)
-	//fmt.Println(Data_add_dict)
-
-	//Mas_calculate_nodes, Mas_dictionary_nodes, Dict_node_name = get_mas_dictionary(session)
 	Dict_node_name = get_dict_name_nodes(session)
 
-	//calculate_all(session)
 	return calculete_node_no_dynemic(session, Iteration)
+}
+
+func StartCalculateNextIteration(
+	iteration int,
+	project_scale int,
+	threshold float64,
+	data_dict map[string][]bool,
+	data_add_dict map[string][]map[string][]map[string]bool,
+	weight map[string]int64,
+	method_id int64,
+	old_iteretion_dict map[string]float64,
+	chek_node_guid string) string {
+	//fmt.Println("START")
+
+	Iteration = iteration
+	ProjectScale = project_scale
+	Threshold = threshold
+	Data_dict = data_dict
+	Data_add_dict = data_add_dict
+	Weight = weight
+
+	session := api_neo4j.GetSession("neo4j://localhost:7687", method_id)
+
+	Dict_node_name = get_dict_name_nodes(session)
+
+	return calculete_node_no_dynemic_next_iteration(session, Iteration, old_iteretion_dict, chek_node_guid)
+}
+
+func calculete_node_no_dynemic(session neo4j.Session, number_iteration int) (string, string, string) {
+	//f, _ := os.OpenFile("info.log", os.O_RDWR|os.O_CREATE, 0666)
+
+	//defer f.Close()
+
+	//infoLog := log.New(f, "INFO\t", log.Ldate|log.Ltime)
+
+	//defer duration(track("calculate"))
+
+	var (
+		final_dict      = map[string]float64{}
+		final_dictMutex = sync.RWMutex{}
+	)
+	mas := return_nod_dynemic_data()
+	var mas_plh [][]interface{}
+	dict_plhp := make(map[string]string)
+
+	type StructDegree struct {
+		Name   string
+		Degree float64
+	}
+
+	chan_calc := make(chan StructDegree)
+	for _, node_guid_mas := range mas {
+		for _, node_guid_a := range node_guid_mas {
+			go func(node_guid string) {
+				//fmt.Println(Dict_node_name[node_guid])
+				var result_calc StructDegree
+
+				result_calc.Name = Dict_node_name[node_guid]
+
+				flag, _ := api_neo4j.Has_label_node(session, node_guid, Labels.state)
+
+				if flag {
+					rezult := 0.0
+					final_dictMutex.Lock()
+					mas_parents, _ := api_neo4j.Get_node_parents(session, node_guid)
+					for _, parent := range mas_parents {
+						rezult += 1 / final_dict[Dict_node_name[parent]]
+					}
+					final_dictMutex.Unlock()
+					result_calc.Degree = float64(len(mas_parents)) / rezult
+					chan_calc <- result_calc
+					return
+				}
+
+				Lbase := 1.0
+				Rbase := 1.0
+
+				guid_manager_opinion, _ := api_neo4j.Get_node_manager_opinion(session, node_guid)
+				key_degree_influence, _ := api_neo4j.Get_degree_influence_node(session, guid_manager_opinion, node_guid)
+
+				degree_influence := Weight[key_degree_influence]
+
+				if Data_dict[node_guid][number_iteration] {
+					Lbase *= math.Pow(2, float64(degree_influence))
+				} else {
+					Rbase *= math.Pow(2, float64(degree_influence)*float64(degree_influence))
+				}
+
+				mas_normal_parent, _ := api_neo4j.Get_mas_normal_parents(session, node_guid)
+
+				if len(mas_normal_parent) > 0 {
+					for _, parent_guid := range mas_normal_parent {
+						//fmt.Println(Dict_node_name[node_guid])
+						var K float64
+						flagState, err := api_neo4j.Has_label_node(session, parent_guid, Labels.normalVState)
+						if err != nil {
+							log.Fatal(err)
+						}
+						flagDetail, err := api_neo4j.Has_label_node(session, parent_guid, Labels.normalVDetail)
+						if err != nil {
+							log.Fatal(err)
+						}
+						var N int
+						if flagState {
+							//fmt.Println("state")
+							N = return_N_on_state(parent_guid, number_iteration)
+						}
+						if flagDetail {
+							//fmt.Println("Detail")
+							N = return_N_on_details(parent_guid, number_iteration)
+						}
+						//fmt.Println(N)
+						normal, err := api_neo4j.Get_normalValue_node(session, parent_guid)
+						if err != nil {
+							log.Fatal(err)
+						}
+						normal_int, err := strconv.Atoi(normal)
+						if err != nil {
+							log.Fatal(err)
+						}
+						Z := normal_int * ProjectScale
+						_type, err := api_neo4j.Get_type_influence_node(session, parent_guid, node_guid)
+						if err != nil {
+							log.Fatal(err)
+						}
+						key_degree_influence_node, err := api_neo4j.Get_degree_influence_node(session, parent_guid, node_guid)
+						if err != nil {
+							log.Fatal(err)
+						}
+						degree_influence_node := Weight[key_degree_influence_node]
+						//fmt.Println(_type)
+						if _type {
+							if N == 0 {
+								Rbase *= math.Pow(2, float64(degree_influence_node))
+							} else if N >= Z {
+								K = Log(float64(Z), float64(N))
+								Lbase *= K * math.Pow(2, float64(degree_influence_node))
+							} else if N < Z {
+								K = float64(1 - (1 / (1 + N)))
+								Rbase *= (1 - K) * math.Pow(2, float64(degree_influence_node))
+								Lbase *= K * math.Pow(2, float64(degree_influence_node))
+							}
+						} else {
+							if N == 0 {
+
+							} else if N >= Z {
+								K = Log(float64(Z), float64(N))
+								Rbase *= K * math.Pow(2, float64(degree_influence_node)*2)
+							} else if N < Z {
+								K = float64(N / Z)
+								Rbase *= K * math.Pow(2, float64(degree_influence_node)*2)
+							}
+						}
+					}
+
+					//fmt.Print("L-> ", Lbase)
+					//fmt.Println("R-> ", Rbase)
+				}
+				//if len(mas_normal_parent) > 0 {
+				//	fmt.Print("F_L-> ", Lbase)
+				//	fmt.Println("F_R-> ", Rbase)
+				//}
+				mas_stat_parents, _ := api_neo4j.Get_mas_stat_parents(session, node_guid)
+				if len(mas_stat_parents) == 0 {
+					value := Data_dict[node_guid][number_iteration]
+					if value {
+						result_calc.Degree = 1
+					} else {
+						result_calc.Degree = 0
+					}
+					chan_calc <- result_calc
+					return
+				}
+				//var LogS string
+				//LogS += Dict_node_name[node_guid] + "\n"
+				final_dictMutex.RLock()
+				//for _, index := range mas_stat_parents {
+				//	LogS += Dict_node_name[index] + "->" + fmt.Sprintf("%f", final_dict[Dict_node_name[index]]) + " "
+				//}
+				//LogS += "\n"
+				vector_parents := create_vector(len(mas_stat_parents))
+				var mas_degree []int64
+				mas_degree_parent := map[string]float64{}
+				for _, parent := range mas_stat_parents {
+					key_degree, err := api_neo4j.Get_degree_influence_node(session, parent, node_guid)
+					if err != nil {
+						log.Fatal(err)
+					}
+					degree := Weight[key_degree]
+					mas_degree = append(mas_degree, degree)
+					mas_degree_parent[parent] = final_dict[Dict_node_name[parent]]
+				}
+				final_dictMutex.RUnlock()
+
+				X := 0.0
+				//fmt.Println(Lbase, Rbase)
+				for _, vector := range vector_parents {
+					L := big.NewFloat(Lbase)
+					R := big.NewFloat(Rbase)
+					Y := big.NewFloat(1)
+
+					for v := 0; v < len(vector); v++ {
+						//fmt.Println("TEST")
+						if vector[v] == '1' {
+							L.Add(L, big.NewFloat(math.Pow(2, float64(mas_degree[v]))))
+							Y.Mul(Y, big.NewFloat(mas_degree_parent[mas_stat_parents[v]]))
+						} else {
+							R.Add(R, big.NewFloat(math.Pow(2, float64(mas_degree[v]))))
+							Y.Mul(Y, big.NewFloat(1-mas_degree_parent[mas_stat_parents[v]]))
+						}
+
+					}
+					L_end, _ := L.Float64()
+					R_end, _ := R.Float64()
+					Y_end, _ := Y.Float64()
+					X += Y_end * (L_end / (L_end + R_end))
+					//LogS += vector + "\n"
+					//LogS += "L -> " + fmt.Sprintf("%f", L) + "\n"
+					//LogS += "R -> " + fmt.Sprintf("%f", R) + "\n"
+					//LogS += "Y -> " + fmt.Sprintf("%f", Y) + "\n"
+					//LogS += "X -> " + fmt.Sprintf("%f", X) + "\n"
+				}
+
+				result_calc.Degree = X
+
+				/*if X < Threshold {
+					mas := []interface{}{Dict_node_name[node_guid], X}
+					mas_plh = append(mas_plh, mas)
+
+					var str_parent []string
+					mas_parents, _ := api_neo4j.Get_node_parents(session, node_guid)
+					for _, parent := range mas_parents {
+						flag, _ := api_neo4j.Has_label_node(session, parent, Labels.checkpoint)
+						if flag {
+							if !Data_dict[parent][Iteration] {
+								str_parent = append(str_parent, Dict_node_name[parent])
+							}
+						}
+
+					}
+					dict_plhp[Dict_node_name[node_guid]] = strings.Join(str_parent, ",")
+				}
+				*/
+
+				chan_calc <- result_calc
+				//infoLog.Println("\n" + LogS)
+			}(node_guid_a)
+		}
+		counter := 0
+		for {
+			a := <-chan_calc
+			final_dictMutex.Lock()
+			final_dict[a.Name] = a.Degree
+			final_dictMutex.Unlock()
+			counter++
+			if counter == len(node_guid_mas) {
+				break
+			}
+		}
+
+	}
+	dictOutPlhAndPlhp := make(map[string]interface{})
+	dictOutPlhAndPlhp["plh"] = mas_plh
+	dictOutPlhAndPlhp["plhp"] = dict_plhp
+
+	f_json, err := json.MarshalIndent(&final_dict, "", "   ")
+	if err != nil {
+		panic(err)
+	}
+	p_json, err := json.MarshalIndent(&mas_plh, "", "   ")
+	if err != nil {
+		panic(err)
+	}
+	pp_json, err := json.MarshalIndent(&dict_plhp, "", "   ")
+	if err != nil {
+		panic(err)
+	}
+	//fmt.Println(string(f_json))
+	return string(f_json), string(p_json), string(pp_json)
+
+}
+
+func calculete_node_no_dynemic_next_iteration(session neo4j.Session, number_iteration int, old_dict_iteration map[string]float64, chek_node_guid string) string {
+	//f, _ := os.OpenFile("info.log", os.O_RDWR|os.O_CREATE, 0666)
+
+	//defer f.Close()
+
+	//infoLog := log.New(f, "INFO\t", log.Ldate|log.Ltime)
+
+	//defer duration(track("calculate"))
+
+	var (
+		final_dict      = map[string]float64{}
+		final_dictMutex = sync.RWMutex{}
+	)
+	mas := return_nod_dynemic_data()
+	var mas_f [][]string
+	flag_m := true
+	for _, node_mas := range mas {
+		for _, cos_guid_node := range node_mas {
+			if cos_guid_node == chek_node_guid {
+				flag_m = false
+			}
+		}
+		if flag_m {
+			for _, cos_guid_node := range node_mas {
+				final_dict[Dict_node_name[cos_guid_node]] = old_dict_iteration[Dict_node_name[cos_guid_node]]
+			}
+		} else {
+			mas_f = append(mas_f, node_mas)
+		}
+
+	}
+
+	type StructDegree struct {
+		Name   string
+		Degree float64
+	}
+
+	chan_calc := make(chan StructDegree)
+	for _, node_guid_mas := range mas_f {
+		for _, node_guid_a := range node_guid_mas {
+			go func(node_guid string) {
+				//fmt.Println(Dict_node_name[node_guid])
+				var result_calc StructDegree
+
+				result_calc.Name = Dict_node_name[node_guid]
+
+				flag, _ := api_neo4j.Has_label_node(session, node_guid, Labels.state)
+
+				if flag {
+					rezult := 0.0
+					final_dictMutex.Lock()
+					mas_parents, _ := api_neo4j.Get_node_parents(session, node_guid)
+					for _, parent := range mas_parents {
+						rezult += 1 / final_dict[Dict_node_name[parent]]
+					}
+					final_dictMutex.Unlock()
+					result_calc.Degree = float64(len(mas_parents)) / rezult
+					chan_calc <- result_calc
+					return
+				}
+
+				Lbase := 1.0
+				Rbase := 1.0
+
+				guid_manager_opinion, _ := api_neo4j.Get_node_manager_opinion(session, node_guid)
+				key_degree_influence, _ := api_neo4j.Get_degree_influence_node(session, guid_manager_opinion, node_guid)
+
+				degree_influence := Weight[key_degree_influence]
+
+				if Data_dict[node_guid][number_iteration] {
+					Lbase *= math.Pow(2, float64(degree_influence))
+				} else {
+					Rbase *= math.Pow(2, float64(degree_influence)*float64(degree_influence))
+				}
+
+				mas_normal_parent, _ := api_neo4j.Get_mas_normal_parents(session, node_guid)
+
+				if len(mas_normal_parent) > 0 {
+					for _, parent_guid := range mas_normal_parent {
+						//fmt.Println(Dict_node_name[node_guid])
+						var K float64
+						flagState, err := api_neo4j.Has_label_node(session, parent_guid, Labels.normalVState)
+						if err != nil {
+							log.Fatal(err)
+						}
+						flagDetail, err := api_neo4j.Has_label_node(session, parent_guid, Labels.normalVDetail)
+						if err != nil {
+							log.Fatal(err)
+						}
+						var N int
+						if flagState {
+							//fmt.Println("state")
+							N = return_N_on_state(parent_guid, number_iteration)
+						}
+						if flagDetail {
+							//fmt.Println("Detail")
+							N = return_N_on_details(parent_guid, number_iteration)
+						}
+						//fmt.Println(N)
+						normal, err := api_neo4j.Get_normalValue_node(session, parent_guid)
+						if err != nil {
+							log.Fatal(err)
+						}
+						normal_int, err := strconv.Atoi(normal)
+						if err != nil {
+							log.Fatal(err)
+						}
+						Z := normal_int * ProjectScale
+						_type, err := api_neo4j.Get_type_influence_node(session, parent_guid, node_guid)
+						if err != nil {
+							log.Fatal(err)
+						}
+						key_degree_influence_node, err := api_neo4j.Get_degree_influence_node(session, parent_guid, node_guid)
+						if err != nil {
+							log.Fatal(err)
+						}
+						degree_influence_node := Weight[key_degree_influence_node]
+						//fmt.Println(_type)
+						if _type {
+							if N == 0 {
+								Rbase *= math.Pow(2, float64(degree_influence_node))
+							} else if N >= Z {
+								K = Log(float64(Z), float64(N))
+								Lbase *= K * math.Pow(2, float64(degree_influence_node))
+							} else if N < Z {
+								K = float64(1 - (1 / (1 + N)))
+								Rbase *= (1 - K) * math.Pow(2, float64(degree_influence_node))
+								Lbase *= K * math.Pow(2, float64(degree_influence_node))
+							}
+						} else {
+							if N == 0 {
+
+							} else if N >= Z {
+								K = Log(float64(Z), float64(N))
+								Rbase *= K * math.Pow(2, float64(degree_influence_node)*2)
+							} else if N < Z {
+								K = float64(N / Z)
+								Rbase *= K * math.Pow(2, float64(degree_influence_node)*2)
+							}
+						}
+					}
+
+					//fmt.Print("L-> ", Lbase)
+					//fmt.Println("R-> ", Rbase)
+				}
+				//if len(mas_normal_parent) > 0 {
+				//	fmt.Print("F_L-> ", Lbase)
+				//	fmt.Println("F_R-> ", Rbase)
+				//}
+				mas_stat_parents, _ := api_neo4j.Get_mas_stat_parents(session, node_guid)
+				if len(mas_stat_parents) == 0 {
+					value := Data_dict[node_guid][number_iteration]
+					if value {
+						result_calc.Degree = 1
+					} else {
+						result_calc.Degree = 0
+					}
+					chan_calc <- result_calc
+					return
+				}
+				//var LogS string
+				//LogS += Dict_node_name[node_guid] + "\n"
+				final_dictMutex.RLock()
+				//for _, index := range mas_stat_parents {
+				//	LogS += Dict_node_name[index] + "->" + fmt.Sprintf("%f", final_dict[Dict_node_name[index]]) + " "
+				//}
+				//LogS += "\n"
+				vector_parents := create_vector(len(mas_stat_parents))
+				var mas_degree []int64
+				mas_degree_parent := map[string]float64{}
+				for _, parent := range mas_stat_parents {
+					key_degree, err := api_neo4j.Get_degree_influence_node(session, parent, node_guid)
+					if err != nil {
+						log.Fatal(err)
+					}
+					degree := Weight[key_degree]
+					mas_degree = append(mas_degree, degree)
+					mas_degree_parent[parent] = final_dict[Dict_node_name[parent]]
+				}
+				final_dictMutex.RUnlock()
+
+				X := 0.0
+				//fmt.Println(Lbase, Rbase)
+				for _, vector := range vector_parents {
+					L := big.NewFloat(Lbase)
+					R := big.NewFloat(Rbase)
+					Y := big.NewFloat(1)
+
+					for v := 0; v < len(vector); v++ {
+						//fmt.Println("TEST")
+						if vector[v] == '1' {
+							L.Add(L, big.NewFloat(math.Pow(2, float64(mas_degree[v]))))
+							Y.Mul(Y, big.NewFloat(mas_degree_parent[mas_stat_parents[v]]))
+						} else {
+							R.Add(R, big.NewFloat(math.Pow(2, float64(mas_degree[v]))))
+							Y.Mul(Y, big.NewFloat(1-mas_degree_parent[mas_stat_parents[v]]))
+						}
+
+					}
+					L_end, _ := L.Float64()
+					R_end, _ := R.Float64()
+					Y_end, _ := Y.Float64()
+					X += Y_end * (L_end / (L_end + R_end))
+					//LogS += vector + "\n"
+					//LogS += "L -> " + fmt.Sprintf("%f", L) + "\n"
+					//LogS += "R -> " + fmt.Sprintf("%f", R) + "\n"
+					//LogS += "Y -> " + fmt.Sprintf("%f", Y) + "\n"
+					//LogS += "X -> " + fmt.Sprintf("%f", X) + "\n"
+				}
+
+				result_calc.Degree = X
+
+				/*if X < Threshold {
+					mas := []interface{}{Dict_node_name[node_guid], X}
+					mas_plh = append(mas_plh, mas)
+
+					var str_parent []string
+					mas_parents, _ := api_neo4j.Get_node_parents(session, node_guid)
+					for _, parent := range mas_parents {
+						flag, _ := api_neo4j.Has_label_node(session, parent, Labels.checkpoint)
+						if flag {
+							if !Data_dict[parent][Iteration] {
+								str_parent = append(str_parent, Dict_node_name[parent])
+							}
+						}
+
+					}
+					dict_plhp[Dict_node_name[node_guid]] = strings.Join(str_parent, ",")
+				}
+				*/
+
+				chan_calc <- result_calc
+				//infoLog.Println("\n" + LogS)
+			}(node_guid_a)
+		}
+		counter := 0
+		for {
+			a := <-chan_calc
+			final_dictMutex.Lock()
+			final_dict[a.Name] = a.Degree
+			final_dictMutex.Unlock()
+			counter++
+			if counter == len(node_guid_mas) {
+				break
+			}
+		}
+
+	}
+
+	f_json, err := json.MarshalIndent(&final_dict, "", "   ")
+	if err != nil {
+		panic(err)
+	}
+
+	//fmt.Println(string(f_json))
+	return string(f_json)
+
 }
 
 func track(msg string) (string, time.Time) {
@@ -182,236 +695,6 @@ func return_N_on_details(parent_guid string, number_iteretion int) int {
 	return counter
 }
 
-func calculete_node_no_dynemic(session neo4j.Session, number_iteration int) (string, string, string) {
-	defer duration(track("calculate"))
-	final_dict := make(map[string]float64)
-	mas := return_nod_dynemic_data()
-	var mas_plh [][]interface{}
-	dict_plhp := make(map[string]string)
-	//fmt.Println(mas)
-	for _, node_guid := range mas {
-		mas_parents, err := api_neo4j.Get_node_parents(session, node_guid)
-
-		if err != nil {
-			log.Fatal(err)
-		}
-
-		flag, err := api_neo4j.Has_label_node(session, node_guid, Labels.state)
-
-		if err != nil {
-			log.Fatal(err)
-		}
-
-		if flag {
-			rezult := 1.0
-			for _, parent := range mas_parents {
-				rezult *= final_dict[Dict_node_name[parent]]
-			}
-			final_dict[Dict_node_name[node_guid]] = rezult
-			continue
-		}
-
-		//fmt.Println(Dict_node_name[node_guid])
-
-		Lbase := 1.0
-		Rbase := 1.0
-
-		key_degree_influence, err := api_neo4j.Get_degree_influence_node(session, mas_parents[0], node_guid)
-
-		if err != nil {
-			log.Fatal(err)
-		}
-		degree_influence := Weight[key_degree_influence]
-		if Data_dict[node_guid][number_iteration] {
-			Lbase *= math.Pow(2, float64(degree_influence))
-		} else {
-			Rbase *= math.Pow(2, float64(degree_influence))
-		}
-
-		mas_normalDetail_parent, err := api_neo4j.Get_node_parents_labels(session, node_guid, Labels.normalVDetail)
-		if err != nil {
-			log.Fatal(err)
-		}
-		mas_normalState_parent, err := api_neo4j.Get_node_parents_labels(session, node_guid, Labels.normalVState)
-		if err != nil {
-			log.Fatal(err)
-		}
-		var mas_normal_parent []string
-		mas_normal_parent = append(mas_normal_parent, mas_normalState_parent...)
-		mas_normal_parent = append(mas_normal_parent, mas_normalDetail_parent...)
-		//fmt.Println(len(mas_normal_parent))
-		if len(mas_normal_parent) > 0 {
-			for _, parent_guid := range mas_normal_parent {
-				K := 1.0
-				flagState, err := api_neo4j.Has_label_node(session, parent_guid, Labels.normalVState)
-				if err != nil {
-					log.Fatal(err)
-				}
-				flagDetail, err := api_neo4j.Has_label_node(session, parent_guid, Labels.normalVDetail)
-				if err != nil {
-					log.Fatal(err)
-				}
-				var N int
-				if flagState {
-					N = return_N_on_state(parent_guid, number_iteration)
-				} else if flagDetail {
-					N = return_N_on_details(parent_guid, number_iteration)
-				}
-				normal, err := api_neo4j.Get_normalValue_node(session, parent_guid)
-				if err != nil {
-					log.Fatal(err)
-				}
-				normal_int, err := strconv.Atoi(normal)
-				if err != nil {
-					log.Fatal(err)
-				}
-				Z := normal_int * ProjectScale
-				_type, err := api_neo4j.Get_type_influence_node(session, parent_guid, node_guid)
-				if err != nil {
-					log.Fatal(err)
-				}
-				key_degree_influence_node, err := api_neo4j.Get_degree_influence_node(session, parent_guid, node_guid)
-				if err != nil {
-					log.Fatal(err)
-				}
-				degree_influence_node := Weight[key_degree_influence_node]
-				if _type {
-					if N == 0 {
-						K = 1
-						Rbase *= K * math.Pow(2, float64(degree_influence_node))
-					} else if N >= Z {
-						K = Log(float64(N), float64(Z))
-						Lbase *= K * math.Pow(2, float64(degree_influence_node))
-					} else if N < Z {
-						K = float64(1 - (1 / (1 + N)))
-						Rbase *= (1 - K) * math.Pow(2, float64(degree_influence_node))
-						Lbase *= K * math.Pow(2, float64(degree_influence_node))
-					}
-				} else {
-					if N == 0 {
-
-					} else if N >= Z {
-						K = Log(float64(N), float64(Z))
-						Rbase *= K * math.Pow(2, float64(degree_influence_node))
-					} else if N < Z {
-						K = float64(N / Z)
-						Rbase *= K * math.Pow(2, float64(degree_influence_node))
-					}
-				}
-			}
-		}
-
-		var mas_stat_parents []string
-		mas_parent_checkpoint, err := api_neo4j.Get_node_parents_labels(session, node_guid, Labels.checkpoint)
-		if err != nil {
-			log.Fatal(err)
-		}
-		mas_parent_state, err := api_neo4j.Get_node_parents_labels(session, node_guid, Labels.state)
-		if err != nil {
-			log.Fatal(err)
-		}
-
-		mas_stat_parents = append(mas_stat_parents, mas_parent_checkpoint...)
-		mas_stat_parents = append(mas_stat_parents, mas_parent_state...)
-
-		if len(mas_stat_parents) == 0 {
-			value := Data_dict[node_guid][number_iteration]
-			if value {
-				final_dict[Dict_node_name[node_guid]] = 1
-			} else {
-				final_dict[Dict_node_name[node_guid]] = 0
-			}
-			continue
-		}
-		vector_parents := create_vector(len(mas_stat_parents))
-
-		var mas_degree []int64
-		for _, parent := range mas_stat_parents {
-			key_degree, err := api_neo4j.Get_degree_influence_node(session, parent, node_guid)
-			if err != nil {
-				log.Fatal(err)
-			}
-			degree := Weight[key_degree]
-			mas_degree = append(mas_degree, degree)
-		}
-
-		X := 0.0
-		for _, vector := range vector_parents {
-			//go func(vector string) {
-			//tokens <- struct{}{}
-			L := Lbase
-			R := Rbase
-			Y := 1.0
-			for v := 0; v < len(vector); v++ {
-				//fmt.Println("TEST")
-				if vector[v] == '1' {
-					L *= math.Pow(2, float64(mas_degree[v]))
-					Y *= final_dict[Dict_node_name[mas_stat_parents[v]]]
-				} else {
-					R *= math.Pow(2, float64(mas_degree[v]))
-					Y *= 1 - final_dict[Dict_node_name[mas_stat_parents[v]]]
-				}
-
-			}
-			X += (L / (L + R)) * Y
-			//<-tokens
-			//XChan = append(XChan, (L/(L+R))*Y)
-			//}(vector)
-		}
-
-		//X := 0.0
-		//for len(XChan) < len(vector_parents) {
-		//
-		//}
-		//for _, item := range XChan {
-		//	X += item
-		//}
-		final_dict[Dict_node_name[node_guid]] = X
-		//fmt.Printf("%s -> %f\n", Dict_node_name[node_guid], X)
-		flag, err = api_neo4j.Has_label_node(session, node_guid, Labels.checkpoint)
-		if err != nil {
-			log.Fatal(err)
-		}
-		if (X < Threshold) && (flag) {
-			mas := []interface{}{Dict_node_name[node_guid], X}
-			mas_plh = append(mas_plh, mas)
-
-			var str_parent []string
-			for _, parent := range mas_parents {
-				flag, err := api_neo4j.Has_label_node(session, parent, Labels.checkpoint)
-				if err != nil {
-					log.Fatal(err)
-				}
-				if flag {
-					if !Data_dict[parent][Iteration] {
-						str_parent = append(str_parent, Dict_node_name[parent])
-					}
-				}
-
-			}
-			dict_plhp[Dict_node_name[node_guid]] = strings.Join(str_parent, ",")
-		}
-	}
-
-	dictOutPlhAndPlhp := make(map[string]interface{})
-	dictOutPlhAndPlhp["plh"] = mas_plh
-	dictOutPlhAndPlhp["plhp"] = dict_plhp
-
-	f_json, err := json.MarshalIndent(&final_dict, "", "   ")
-	if err != nil {
-		panic(err)
-	}
-	p_json, err := json.MarshalIndent(&mas_plh, "", "   ")
-	if err != nil {
-		panic(err)
-	}
-	pp_json, err := json.MarshalIndent(&dict_plhp, "", "   ")
-	if err != nil {
-		panic(err)
-	}
-	return string(f_json), string(p_json), string(pp_json)
-}
-
 func create_vector(len_vector int) []string {
 	var mas []string
 	for i := 0; i < int(math.Pow(2, float64(len_vector))); i++ {
@@ -438,9 +721,9 @@ func Log(base, x float64) float64 {
 	return math.Log(x) / math.Log(base)
 }
 
-func return_nod_dynemic_data() []string {
+func return_nod_dynemic_data() [][]string {
 	type json_struct struct {
-		Mas []string
+		Mas [][]string
 	}
 
 	var st json_struct
