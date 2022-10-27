@@ -2,6 +2,7 @@ package calculate_module
 
 import (
 	"calculator/api_neo4j"
+	logmodule "calculator/log_module"
 	"encoding/json"
 	"fmt"
 	"io/ioutil"
@@ -9,6 +10,7 @@ import (
 	"math"
 	"math/big"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -96,8 +98,8 @@ func StartCalculate(
 	Data_add_dict = data_add_dict
 	Weight = weight
 
-	session := api_neo4j.GetSession("neo4j://localhost:7687", method_id)
-
+	session := api_neo4j.GetSession(method_id)
+	defer session.Close()
 	Dict_node_name = get_dict_name_nodes(session)
 
 	return calculete_node_no_dynemic(session, Iteration)
@@ -112,7 +114,9 @@ func StartCalculateNextIteration(
 	weight map[string]int64,
 	method_id int64,
 	old_iteretion_dict map[string]float64,
-	chek_node_guid string) string {
+	chek_node_guid string,
+	flag_change_product bool,
+	guid_product string) string {
 	//fmt.Println("START")
 
 	Iteration = iteration
@@ -122,21 +126,17 @@ func StartCalculateNextIteration(
 	Data_add_dict = data_add_dict
 	Weight = weight
 
-	session := api_neo4j.GetSession("neo4j://localhost:7687", method_id)
-
+	session := api_neo4j.GetSession(method_id)
+	defer session.Close()
 	Dict_node_name = get_dict_name_nodes(session)
 
-	return calculete_node_no_dynemic_next_iteration(session, Iteration, old_iteretion_dict, chek_node_guid)
+	return calculete_node_no_dynemic_next_iteration(session, Iteration, old_iteretion_dict, chek_node_guid, flag_change_product, guid_product)
 }
 
 func calculete_node_no_dynemic(session neo4j.Session, number_iteration int) (string, string, string) {
-	//f, _ := os.OpenFile("info.log", os.O_RDWR|os.O_CREATE, 0666)
-
-	//defer f.Close()
-
-	//infoLog := log.New(f, "INFO\t", log.Ldate|log.Ltime)
-
-	//defer duration(track("calculate"))
+	chanal_lost := logmodule.GetChanal()
+	go logmodule.StartLogs(&chanal_lost)
+	defer duration(track("calculate"))
 
 	var (
 		final_dict      = map[string]float64{}
@@ -274,13 +274,17 @@ func calculete_node_no_dynemic(session neo4j.Session, number_iteration int) (str
 					chan_calc <- result_calc
 					return
 				}
-				//var LogS string
-				//LogS += Dict_node_name[node_guid] + "\n"
-				final_dictMutex.RLock()
-				//for _, index := range mas_stat_parents {
-				//	LogS += Dict_node_name[index] + "->" + fmt.Sprintf("%f", final_dict[Dict_node_name[index]]) + " "
-				//}
-				//LogS += "\n"
+				var LogS strings.Builder
+				LogS.WriteString(Dict_node_name[node_guid])
+				LogS.WriteString("\n")
+				//final_dictMutex.RLock()
+				for _, index := range mas_stat_parents {
+					LogS.WriteString(Dict_node_name[index])
+					LogS.WriteString("->")
+					LogS.WriteString(fmt.Sprintf("%f", final_dict[Dict_node_name[index]]))
+					LogS.WriteString(" ")
+				}
+				LogS.WriteString("\n")
 				vector_parents := create_vector(len(mas_stat_parents))
 				var mas_degree []int64
 				mas_degree_parent := map[string]float64{}
@@ -293,7 +297,7 @@ func calculete_node_no_dynemic(session neo4j.Session, number_iteration int) (str
 					mas_degree = append(mas_degree, degree)
 					mas_degree_parent[parent] = final_dict[Dict_node_name[parent]]
 				}
-				final_dictMutex.RUnlock()
+				//final_dictMutex.RUnlock()
 
 				X := 0.0
 				//fmt.Println(Lbase, Rbase)
@@ -317,11 +321,20 @@ func calculete_node_no_dynemic(session neo4j.Session, number_iteration int) (str
 					R_end, _ := R.Float64()
 					Y_end, _ := Y.Float64()
 					X += Y_end * (L_end / (L_end + R_end))
-					//LogS += vector + "\n"
-					//LogS += "L -> " + fmt.Sprintf("%f", L) + "\n"
-					//LogS += "R -> " + fmt.Sprintf("%f", R) + "\n"
-					//LogS += "Y -> " + fmt.Sprintf("%f", Y) + "\n"
-					//LogS += "X -> " + fmt.Sprintf("%f", X) + "\n"
+					LogS.WriteString(vector)
+					LogS.WriteString("\n")
+					LogS.WriteString("L -> ")
+					LogS.WriteString(fmt.Sprintf("%f", L))
+					LogS.WriteString("\n")
+					LogS.WriteString("R -> ")
+					LogS.WriteString(fmt.Sprintf("%f", R))
+					LogS.WriteString("\n")
+					LogS.WriteString("Y -> ")
+					LogS.WriteString(fmt.Sprintf("%f", Y))
+					LogS.WriteString("\n")
+					LogS.WriteString("X -> ")
+					LogS.WriteString(fmt.Sprintf("%f", X))
+					LogS.WriteString("\n")
 				}
 
 				result_calc.Degree = X
@@ -346,7 +359,7 @@ func calculete_node_no_dynemic(session neo4j.Session, number_iteration int) (str
 				*/
 
 				chan_calc <- result_calc
-				//infoLog.Println("\n" + LogS)
+				chanal_lost <- LogS.String()
 			}(node_guid_a)
 		}
 		counter := 0
@@ -379,11 +392,12 @@ func calculete_node_no_dynemic(session neo4j.Session, number_iteration int) (str
 		panic(err)
 	}
 	//fmt.Println(string(f_json))
+	logmodule.StopLogs(&chanal_lost)
 	return string(f_json), string(p_json), string(pp_json)
 
 }
 
-func calculete_node_no_dynemic_next_iteration(session neo4j.Session, number_iteration int, old_dict_iteration map[string]float64, chek_node_guid string) string {
+func calculete_node_no_dynemic_next_iteration(session neo4j.Session, number_iteration int, old_dict_iteration map[string]float64, chek_node_guid string, flag_change_product bool, guid_product string) string {
 	//f, _ := os.OpenFile("info.log", os.O_RDWR|os.O_CREATE, 0666)
 
 	//defer f.Close()
@@ -398,21 +412,25 @@ func calculete_node_no_dynemic_next_iteration(session neo4j.Session, number_iter
 	)
 	mas := return_nod_dynemic_data()
 	var mas_f [][]string
-	flag_m := true
-	for _, node_mas := range mas {
-		for _, cos_guid_node := range node_mas {
-			if cos_guid_node == chek_node_guid {
-				flag_m = false
-			}
-		}
-		if flag_m {
+	if !flag_change_product {
+		flag_m := true
+		for _, node_mas := range mas {
 			for _, cos_guid_node := range node_mas {
-				final_dict[Dict_node_name[cos_guid_node]] = old_dict_iteration[Dict_node_name[cos_guid_node]]
+				if cos_guid_node == chek_node_guid {
+					flag_m = false
+				}
 			}
-		} else {
-			mas_f = append(mas_f, node_mas)
-		}
+			if flag_m {
+				for _, cos_guid_node := range node_mas {
+					final_dict[Dict_node_name[cos_guid_node]] = old_dict_iteration[Dict_node_name[cos_guid_node]]
+				}
+			} else {
+				mas_f = append(mas_f, node_mas)
+			}
 
+		}
+	} else {
+		mas_f = mas
 	}
 
 	type StructDegree struct {
@@ -480,6 +498,11 @@ func calculete_node_no_dynemic_next_iteration(session neo4j.Session, number_iter
 						if flagDetail {
 							//fmt.Println("Detail")
 							N = return_N_on_details(parent_guid, number_iteration)
+						}
+						if flag_change_product {
+							if parent_guid == guid_product {
+								N += 1
+							}
 						}
 						//fmt.Println(N)
 						normal, err := api_neo4j.Get_normalValue_node(session, parent_guid)

@@ -28,6 +28,10 @@ func NextIteration(
 		}
 	}
 	flag_chan := make(chan bool)
+	session := api.GetSession(method_id)
+	defer session.Close()
+	mas_product, _ := api.Get_mas_normal_parents_concrect_projectr(session)
+	flag_counter += len(mas_product)
 	for name_node, _ := range data_dict {
 		//fmt.Println(name_node)
 		if !data_dict[name_node][iteration] {
@@ -41,11 +45,18 @@ func NextIteration(
 					intermediate_dict[key] = _mas
 				}
 				intermediate_dict[name_node][iteration] = true
-				fin_dict[name_node] = GetDelta(calculate.StartCalculateNextIteration(iteration, project_scale, threshold, intermediate_dict, data_add_dict, weight, method_id, old_dict_iteration, name_node))
+				fin_dict[name_node] = GetDelta(calculate.StartCalculateNextIteration(iteration, project_scale, threshold, intermediate_dict, data_add_dict, weight, method_id, old_dict_iteration, name_node, false, ""))
 				flag_chan <- true
 			}(name_node)
 		}
 	}
+	for _, guid_product := range mas_product {
+		go func(guid_product string) {
+			fin_dict[guid_product] = GetDelta(calculate.StartCalculateNextIteration(iteration, project_scale, threshold, data_dict, data_add_dict, weight, method_id, old_dict_iteration, "", true, guid_product))
+			flag_chan <- true
+		}(guid_product)
+	}
+
 	flag_counter_2 := 0
 	for {
 		<-flag_chan
@@ -85,7 +96,8 @@ func GetAlfaNode(IM map[string]float64, method_id int64) (string, float64) {
 		}
 	}
 
-	session := api.GetSession("neo4j://localhost:7687", method_id)
+	session := api.GetSession(method_id)
+	defer session.Close()
 	name, _ := api.Get_node_name(session, ES.name_node)
 	return name, ES.value
 }
