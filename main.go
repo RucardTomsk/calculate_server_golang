@@ -40,10 +40,10 @@ func (s *server) Calculate(ctx context.Context, in *pb.Request) (*pb.Response, e
 	}
 
 	res, plh, plhp := calculate.StartCalculate(int(in.GetIter()), 1, in.GetThreshold(), st.Data_dict, st.Data_add_dict, st.Weight, st.Method_id)
-	_map := make(map[string]float64)
-	json.Unmarshal([]byte(res), &_map)
-	name, value := next_iteration.NextIteration(int(in.GetIter()), 1, in.GetThreshold(), st.Data_dict, st.Data_add_dict, st.Weight, st.Method_id, _map)
-	fmt.Println(name, value)
+	//_map := make(map[string]float64)
+	//json.Unmarshal([]byte(res), &_map)
+	//name, value := next_iteration.NextIteration(int(in.GetIter()), 1, in.GetThreshold(), st.Data_dict, st.Data_add_dict, st.Weight, st.Method_id, _map)
+	//fmt.Println(name, value)
 	return &pb.Response{Res: res, Plh: plh, Plhp: plhp}, nil
 }
 
